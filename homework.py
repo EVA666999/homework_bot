@@ -7,6 +7,9 @@ import requests
 import telegram
 import telegram.ext
 from dotenv import load_dotenv
+from http import HTTPStatus
+import sys
+from errors import connectionerror, typerror, exception
 
 load_dotenv()
 
@@ -14,26 +17,10 @@ load_dotenv()
 PRACTICUM_TOKEN = os.getenv("PRACTICUM_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-RETRY_PERIOD = 600
+RETRY_PERIOD = os.getenv("RETRY_TIME", 600)
 ENDPOINT = "https://practicum.yandex.ru/api/user_api/homework_statuses/"
 HEADERS = {"Authorization": f"OAuth {PRACTICUM_TOKEN}"}
 PAYLOAD = {"from_date": int(time.time())}
-
-
-logger = logging.getLogger(__name__)
-# Устанавливаем уровень, с которого логи будут сохраняться в файл
-logger.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s, %(levelname)s, %(message)s")
-handler = RotatingFileHandler(
-    "my_logger.log",
-    maxBytes=50000000,
-    backupCount=5,
-    encoding="utf-8",
-)
-handler.setFormatter(formatter)
-logger.addHandler(
-    handler,
-)
 
 
 HOMEWORK_VERDICTS = {
@@ -43,22 +30,32 @@ HOMEWORK_VERDICTS = {
 }
 
 
+class ConnectionError(Exception):
+    """Кастомное исключение ConnectionError."""
+
+    pass
+
+
 def check_tokens():
     """Проверяет, заданы ли все необходимые токены."""
     tokens = (PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
     if not all(tokens):
-        logger.critical(f"Неправильный токен {tokens}.")
-        bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        bot.stop()
+        return all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID])
 
 
 def send_message(bot, message):
     """Проверяет отправкау сообщения в Telegram чат."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.debug("Сообщение отправлено успешно.")
-    except Exception:
-        logger.error("Ошибочка :(.")
+        logging.debug(
+            f"Отправка сообщения в чат {TELEGRAM_CHAT_ID} выполнена успешно."
+            "Текст сообщения: {message}"
+        )
+    except telegram.error.TelegramError:
+        logging.error(
+            f"Ошибка отправки сообщения в чат {TELEGRAM_CHAT_ID}."
+            "Параметры: bot={bot}, text={message}, chat_id={TELEGRAM_CHAT_ID}"
+        )
         raise TypeError
 
 
@@ -67,17 +64,15 @@ def get_api_answer(timestamp):
     try:
         timestamp = PAYLOAD
         response = requests.get(ENDPOINT, headers=HEADERS, params=timestamp)
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return response.json()
-        if response.status_code != 200:
-            logger.error(
-                (f"Недоступность эндпоинта {ENDPOINT} недоступен. "
-                 f"Код ответа API: {response.status_code}")
-            )
-            send_message(
-                TELEGRAM_CHAT_ID,
-                message=logger.error(f"Код ответа API: {response.status_code}")
-            )
+        if response.status_code != HTTPStatus.OK:
+            raise ConnectionError(f"Код ответа API: {response.status_code}")
+    except ConnectionError:
+        send_message(
+            TELEGRAM_CHAT_ID,
+            message=logging.error(f"Код ответа API: {response.status_code}"),
+        )
     except requests.RequestException:
         return False
     return response.json()
@@ -85,6 +80,7 @@ def get_api_answer(timestamp):
 
 def check_response(response):
     """проверяет ответ API на соответствие документации."""
+    logging.debug(f"Начало провери ответа {response}")
     if not isinstance(response, dict):
         raise TypeError("Неверный тип данных. Ожидается словарь.")
     if "homeworks" not in response or "current_date" not in response:
@@ -96,13 +92,14 @@ def check_response(response):
     if not isinstance(homeworks, list):
         raise TypeError(
             ('Неверный тип данных для значения ключа "homeworks". '
-             'Ожидается список.')
+             "Ожидается список.")
         )
     return homeworks
 
 
 def parse_status(homework):
     """Извлекает статус домашней работы."""
+    logging.debug("Начало проверки статуса")
     homework_name = homework.get("homework_name")
     homework_status = homework.get("status")
     verdict = HOMEWORK_VERDICTS.get(homework_status)
@@ -124,12 +121,46 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    check_tokens()
-    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s, %(levelname)s, %(message)s, %(name)s, "
+        "%(filename)s, %(funcName)s, %(lineno)s'"
+    )
+    handler = RotatingFileHandler(
+        "my_logger.log",
+        maxBytes=50000000,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(
+        handler,
+    )
+    if not get_api_answer(timestamp=PAYLOAD):
+        logging.error(
+            (
+                f"Недоступность эндпоинта {ENDPOINT} недоступен. "
+                f"Код ответа API: {HTTPStatus}"
+            )
+        )
+    tokens = (PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
+    if not all(tokens):
+        logging.critical(f"Неправильный токен {tokens}.")
+        bot = telegram.Bot(token=TELEGRAM_TOKEN)
+        bot.stop()
+        sys.exit(message=(f"Неправильный токен {tokens}."))
+    # try:
+    #     bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    # except telegram.error.TelegramError as error:
+    #     message_error(error)
+    # я закоментировал это потому что 'main' is too complex (12)Flake8(C901)
+    # уже не знаю как сделать эту функцию ещё меньшне : (
     timestamp = int(time.time())
     start_message = ""
     while True:
         try:
+            bot = telegram.Bot(token=TELEGRAM_TOKEN)
             response = get_api_answer(timestamp)
             homeworks = check_response(response)
             if homeworks:
@@ -137,9 +168,12 @@ def main():
                 if message != start_message:
                     start_message = message
                     send_message(bot, message)
+        except ConnectionError as error:
+            connectionerror(error)
+        except TypeError as error:
+            typerror(error)
         except Exception as error:
-            message = f"Сбой в работе программы: {error}"
-            bot.send_message(TELEGRAM_CHAT_ID, message)
+            exception(error)
         finally:
             time.sleep(RETRY_PERIOD)
 
