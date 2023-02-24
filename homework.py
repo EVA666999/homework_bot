@@ -1,15 +1,16 @@
 import logging
 import os
+import sys
 import time
+from http import HTTPStatus
 from logging.handlers import RotatingFileHandler
 
 import requests
 import telegram
 import telegram.ext
 from dotenv import load_dotenv
-from http import HTTPStatus
-import sys
-from errors import connectionerror, typerror, exception
+
+from errors import connectionerror, exception, typerror
 
 load_dotenv()
 
@@ -38,14 +39,13 @@ class ConnectionError(Exception):
 
 def check_tokens():
     """Проверяет, заданы ли все необходимые токены."""
-    tokens = (PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    if not all(tokens):
-        return all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID])
+    return all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID])
 
 
 def send_message(bot, message):
     """Проверяет отправкау сообщения в Telegram чат."""
     try:
+        logging.debug(f"Начало отправки сообщения в чат {TELEGRAM_CHAT_ID}.")
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logging.debug(
             f"Отправка сообщения в чат {TELEGRAM_CHAT_ID} выполнена успешно."
@@ -62,6 +62,7 @@ def send_message(bot, message):
 def get_api_answer(timestamp):
     """делает запрос к единственному эндпоинту API."""
     try:
+        logging.debug(f"Отправка запроса к API с параметрами: {timestamp}")
         timestamp = PAYLOAD
         response = requests.get(ENDPOINT, headers=HEADERS, params=timestamp)
         if response.status_code == HTTPStatus.OK:
@@ -144,18 +145,11 @@ def main():
                 f"Код ответа API: {HTTPStatus}"
             )
         )
-    tokens = (PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    if not all(tokens):
-        logging.critical(f"Неправильный токен {tokens}.")
+    if not check_tokens():
+        logging.critical("Неправильный токен.")
         bot = telegram.Bot(token=TELEGRAM_TOKEN)
         bot.stop()
-        sys.exit(message=(f"Неправильный токен {tokens}."))
-    # try:
-    #     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    # except telegram.error.TelegramError as error:
-    #     message_error(error)
-    # я закоментировал это потому что 'main' is too complex (12)Flake8(C901)
-    # уже не знаю как сделать эту функцию ещё меньшне : (
+        sys.exit(message=("Неправильный токен."))
     timestamp = int(time.time())
     start_message = ""
     while True:
